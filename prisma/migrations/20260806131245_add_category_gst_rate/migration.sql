@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE "Category" ADD COLUMN     "gstRate" DOUBLE PRECISION NOT NULL DEFAULT 18;

@@ -1,0 +1,398 @@
+// Momai Traders E-Commerce — Prisma Schema (PostgreSQL)
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------- Enums ----------
+
+enum Role {
+  CUSTOMER
+  ADMIN
+}
+
+enum OrderStatus {
+  PLACED // order placed, awaiting admin quote/confirmation
+  QUOTED // admin confirmed prices, waiting for customer payment approval
+  CONFIRMED // customer approved quote / order confirmed
+  PROCESSING // preparing/shipping
+  SHIPPED
+  DELIVERED
+  CANCELLED
+}
+
+enum PaymentMethod {
+  COD
+  BANK_TRANSFER
+  WHATSAPP
+}
+
+enum PaymentStatus {
+  PENDING
+  PARTIAL
+  PAID
+  REFUNDED
+}
+
+enum PaymentMode {
+  CHEQUE
+  NEFT_RTGS_UPI
+  CASH
+}
+
+enum OutstandingStatus {
+  OPEN
+  PARTIALLY_PAID
+  SETTLED
+}
+
+enum EnquiryStatus {
+  NEW
+  RESPONDED
+  CLOSED
+}
+
+// ---------- Users ----------
+
+model User {
+  id           String    @id @default(cuid())
+  name         String
+  businessName String?
+  email        String    @unique
+  phone        String?
+  passwordHash String
+  role         Role      @default(CUSTOMER)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  addresses  Address[]
+  cartItems  CartItem[]
+  orders     Order[]
+  enquiries  Enquiry[]
+
+  @@index([role])
+}
+
+model Address {
+  id        String  @id @default(cuid())
+  userId    String
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  line1     String
+  line2     String?
+  city      String
+  state     String
+  pincode   String
+  phone     String?
+  isDefault Boolean @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+// ---------- Catalog ----------
+
+model Category {
+  id          String    @id @default(cuid())
+  name        String
+  slug        String    @unique
+  description String?
+  image       String?
+  gstRate     Float     @default(18)
+  sortOrder   Int       @default(0)
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+
+  products Product[]
+
+  @@index([isActive, sortOrder])
+}
+
+model Product {
+  id             String   @id @default(cuid())
+  name           String
+  slug           String   @unique
+  categoryId     String
+  category       Category @relation(fields: [categoryId], references: [id])
+  description    String?
+  specifications String? // newline-separated key:value specs
+  images         String[] // image URLs (first = main)
+  unit           String   @default("pcs") // pcs | roll | kg | box | set | litre
+  price          Float? // null => enquiry/quote item (no public price)
+  gstRate        Float    @default(18) // GST % applied on invoice
+  hsnCode        String?
+  minOrderQty    Int      @default(1)
+  stock          Int? // null => stock not tracked
+  isActive       Boolean  @default(true)
+  isFeatured     Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  orderItems     OrderItem[]
+  cartItems      CartItem[]
+  enquiries      Enquiry[]
+  quotationItems QuotationItem[]
+
+  @@index([categoryId])
+  @@index([isActive, isFeatured])
+}
+
+model CartItem {
+  id        String  @id @default(cuid())
+  userId    String
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  productId String
+  product   Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  quantity  Int     @default(1)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, productId])
+  @@index([userId])
+}
+
+// ---------- Orders ----------
+
+model Order {
+  id               String        @id @default(cuid())
+  orderNumber      String        @unique
+  userId           String
+  user             User          @relation(fields: [userId], references: [id])
+  addressSnapshot  String // JSON snapshot of the billing address at order time
+  shippingAddressSnapshot String? // JSON snapshot of the shipping address; null = same as billing
+  status           OrderStatus   @default(PLACED)
+  paymentMethod    PaymentMethod
+  paymentStatus    PaymentStatus @default(PENDING)
+  amount           Float? // total (with GST) confirmed by admin during quoting
+  taxAmount        Float? @default(0)
+  discount         Float         @default(0)
+  customerNote     String?
+  adminNote        String?
+  invoiceNumber    String?       @unique
+  invoiceDate      DateTime?
+  shippedAt        DateTime?
+  deliveredAt      DateTime?
+  cancelledAt      DateTime?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  items    OrderItem[]
+  challans DeliveryChallan[]
+  outstanding Outstanding?
+  enquiry  Enquiry?   @relation("OrderEnquiry")
+  documentArchives DocumentArchive[]
+
+  @@index([userId])
+  @@index([status])
+  @@index([orderNumber])
+}
+
+model OrderItem {
+  id        String  @id @default(cuid())
+  orderId   String
+  order     Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId String?
+  product   Product? @relation(fields: [productId], references: [id])
+  name      String // snapshot of product name
+  unit      String  @default("pcs")
+  quantity     Int
+  unitPrice    Float? // quote price set by admin (null until quoted)
+  gstRate      Float   @default(18)
+  hsnCode      String?
+  deliveredQty Int     @default(0) // quantity already dispatched via delivery challans
+
+  challanItems DeliveryChallanItem[]
+
+  @@index([orderId])
+}
+
+// ---------- Delivery challans ----------
+
+model DeliveryChallan {
+  id            String                  @id @default(cuid())
+  challanNumber String                  @unique
+  orderId       String
+  order         Order                   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  courierName   String?
+  trackingNumber String?
+  trackingUrl   String?
+  createdAt     DateTime                @default(now())
+
+  items DeliveryChallanItem[]
+
+  @@index([orderId])
+}
+
+model DeliveryChallanItem {
+  id           String           @id @default(cuid())
+  challanId    String
+  challan      DeliveryChallan  @relation(fields: [challanId], references: [id], onDelete: Cascade)
+  orderItemId  String
+  orderItem    OrderItem        @relation(fields: [orderItemId], references: [id])
+  name         String // snapshot of product name
+  unit         String           @default("pcs")
+  quantity     Int
+  hsnCode      String?
+
+  @@index([challanId])
+  @@index([orderItemId])
+}
+
+// ---------- Outstanding (accounts receivable) ----------
+
+model Outstanding {
+  id            String             @id @default(cuid())
+  orderId       String             @unique
+  order         Order              @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  invoiceNumber String             @unique
+  invoiceDate   DateTime?
+  company       String // buyer business name or contact name
+  contactName   String?
+  city          String
+  state         String
+  amount        Float // invoice grand total as printed on the PDF (rounded)
+  paidAmount    Float              @default(0)
+  status        OutstandingStatus  @default(OPEN)
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+
+  payments OutstandingPayment[]
+
+  @@index([company])
+  @@index([city])
+  @@index([status])
+}
+
+model OutstandingPayment {
+  id            String      @id @default(cuid())
+  outstandingId String
+  outstanding   Outstanding @relation(fields: [outstandingId], references: [id], onDelete: Cascade)
+  amount        Float
+  mode          PaymentMode @default(CHEQUE)
+  referenceNo   String? // cheque number / UTR / transaction reference
+  bankName      String?
+  branch        String?
+  chequeDate    DateTime?
+  paymentDate   DateTime?
+  note          String?
+  receivedOn    DateTime    @default(now())
+  createdAt     DateTime    @default(now())
+
+  @@index([outstandingId])
+}
+
+// ---------- Enquiries ----------
+
+enum EnquiryType {
+  ENQUIRY
+  QUOTATION
+}
+
+model Enquiry {
+  id         String        @id @default(cuid())
+  userId     String?
+  user       User?         @relation(fields: [userId], references: [id])
+  productId  String?
+  product    Product?      @relation(fields: [productId], references: [id])
+  type       EnquiryType   @default(ENQUIRY)
+  name       String
+  company    String?
+  email      String?
+  phone      String?
+  subject    String?
+  quantity   Int?
+  unit       String?
+  specs      String?
+  message    String
+  status     EnquiryStatus @default(NEW)
+  token      String?       @unique // secure link used by the customer to view/accept the priced quote
+  orderId    String?       @unique // set when the accepted quotation becomes an order
+  order      Order?        @relation("OrderEnquiry", fields: [orderId], references: [id])
+  quotedAt   DateTime?
+  acceptedAt DateTime?
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+
+  items QuotationItem[]
+
+  @@index([type, status])
+  @@index([productId])
+}
+
+model QuotationItem {
+  id        String   @id @default(cuid())
+  enquiryId String
+  enquiry   Enquiry  @relation(fields: [enquiryId], references: [id], onDelete: Cascade)
+  productId String?
+  product   Product? @relation(fields: [productId], references: [id])
+  name      String // snapshot of product name
+  unit      String   @default("pcs")
+  quantity  Int
+  unitPrice Float? // wholesale price set by admin (null until priced)
+  gstRate   Float    @default(18)
+  hsnCode   String?
+
+  @@index([enquiryId])
+}
+
+// ---------- Password reset OTP ----------
+
+model PasswordResetOtp {
+  id        String   @id @default(cuid())
+  email     String
+  otpHash   String
+  expiresAt DateTime
+  used      Boolean  @default(false)
+  attempts  Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@index([email])
+  @@index([expiresAt])
+}
+
+// ---------- Site content ----------
+
+model Banner {
+  id        String  @id @default(cuid())
+  title     String
+  subtitle  String?
+  image     String
+  link      String?
+  sortOrder Int     @default(0)
+  isActive  Boolean @default(true)
+  createdAt DateTime @default(now())
+
+  @@index([isActive, sortOrder])
+}
+
+model Setting {
+  key   String @id
+  value String
+}
+
+// ---------- Stamped copy archive (Google Drive) ----------
+
+enum ArchiveDocType {
+  INVOICE
+  CHALLAN
+}
+
+model DocumentArchive {
+  id          String         @id @default(cuid())
+  orderId     String
+  order       Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  challanId   String?
+  docType     ArchiveDocType
+  fileName    String
+  driveFileId String
+  driveUrl    String?
+  folderPath  String // e.g. "Acme Corp/2026/08/12/Delivery Challan"
+  uploadedAt  DateTime       @default(now())
+
+  @@index([orderId])
+  @@index([challanId])
+}
